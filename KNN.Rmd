@@ -1,0 +1,258 @@
+---
+title: "KNN"
+author: "Mateus Girolimetto"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#-------------------------------------------------
+# 1. Carregando Dados
+#-------------------------------------------------
+```{r Caricando Dati}
+library(readr)
+diabetes_dataset <- read_csv("/home/usuario/Desktop/Monografia/Versão 2/diabetes_dataset.csv")
+
+
+# Conversione delle variabili in fattori
+diabetes_dataset$gender <- factor(diabetes_dataset$gender, levels = c("Male", "Female", "Other"))
+
+diabetes_dataset$ethnicity <- factor(diabetes_dataset$ethnicity, levels = c("White", "Hispanic", "Black", "Asian", "Other"))
+
+diabetes_dataset$education_level <- factor(diabetes_dataset$education_level, levels = c("No formal", "Highschool", "Graduate", "Postgraduate"))
+
+diabetes_dataset$income_level <- factor(diabetes_dataset$income_level, levels = c("Low", "Lower-Middle", "Middle", "Upper-Middle", "High"))
+
+diabetes_dataset$employment_status <- factor(diabetes_dataset$employment_status, levels = c("Employed", "Unemployed", "Retired", "Student"))
+
+diabetes_dataset$smoking_status <- factor(diabetes_dataset$smoking_status, levels = c("Never", "Former", "Current"))
+
+diabetes_dataset$family_history_diabetes <- factor(diabetes_dataset$family_history_diabetes, levels = c(0, 1), labels = c("No", "Yes"))
+
+diabetes_dataset$hypertension_history <- factor(diabetes_dataset$hypertension_history, levels = c(0, 1), labels = c("No", "Yes"))
+
+diabetes_dataset$cardiovascular_history <- factor(diabetes_dataset$cardiovascular_history, levels = c(0, 1), labels = c("No", "Yes"))
+
+diabetes_dataset$diabetes_stage <- factor(diabetes_dataset$diabetes_stage, levels = c("No Diabetes", "Pre-Diabetes", "Type 1", "Type 2", "Gestational"))
+
+diabetes_dataset$diagnosed_diabetes <- factor(diabetes_dataset$diagnosed_diabetes, levels = c(0, 1), labels = c("No", "Yes"))
+
+
+```
+
+#-------------------------------------------------
+# 2. Split treino / teste  e padronização
+#-------------------------------------------------
+```{r divisione dell insieme dei dati - parte 1}
+library(caret)
+set.seed(123)
+
+# Prima divisione: traning (95%) e test (5%)
+train_index <- createDataPartition(diabetes_dataset$diagnosed_diabetes, p = 0.95, list = FALSE)
+train <- diabetes_dataset[train_index, ]
+test  <- diabetes_dataset[-train_index, ]
+```
+
+```{r standardizzando insieme train/validation/test}
+
+# Separando le variabili numeriche
+library(dplyr)
+numeriche_train <- train %>% select(where(is.numeric))
+categoriali_train <- train %>% select(where(is.factor))
+
+numeriche_test <- test %>% select(where(is.numeric))
+categoriali_test <- test %>% select(where(is.factor))
+
+# Padronizando Treino
+numeriche_train_scaled <- scale(numeriche_train)
+
+# Guardar os parâmetros do treino (médias e desvios)
+numeriche_train_means <- attr(numeriche_train_scaled, "scaled:center")
+numeriche_train_sds   <- attr(numeriche_train_scaled, "scaled:scale")
+
+# Conjunto Treino Padronizado
+numeriche_train_scaled <- as.data.frame(numeriche_train_scaled)
+
+#numeriche_train_scaled$alcohol_consumption_per_week <- train$alcohol_consumption_per_week
+
+train_scaled <- cbind(numeriche_train_scaled, categoriali_train)
+
+# Aplicando em teste
+
+numeriche_test_scaled <- scale(numeriche_test,
+                        center = numeriche_train_means,
+                        scale  = numeriche_train_sds)
+numeriche_test_scaled <- as.data.frame(numeriche_test_scaled)
+
+#numeriche_test_scaled$alcohol_consumption_per_week <- test$alcohol_consumption_per_week
+
+test_scaled <- cbind(numeriche_test_scaled, categoriali_test)
+
+```
+
+```{r divisione dell insieme dei dati - parte 2}
+library(caret)
+set.seed(123)
+
+# Seconda divisione in "train": validation (89% de 95% = 85%) e valid (10%)
+train_index_2 <- createDataPartition(train_scaled$diagnosed_diabetes, p = 85/95, list = FALSE)
+train_scaled_2 <- train_scaled[train_index_2, ]
+valid_scaled <- train_scaled[-train_index_2, ]
+```
+
+```{r Dados para Modelo KNN}
+library(dplyr)
+
+vars_to_drop <- c("diabetes_stage", "diabetes_risk_score")
+
+
+# Selecionar apenas numéricas e remover as variáveis problemáticas
+train_x <- train_scaled_2 %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(vars_to_drop))
+
+valid_x <- valid_scaled %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(vars_to_drop))
+
+test_x <- test_scaled %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(vars_to_drop))
+
+# Variáveis resposta
+train_y <- train_scaled_2$diagnosed_diabetes
+valid_y <- valid_scaled$diagnosed_diabetes
+test_y  <- test_scaled$diagnosed_diabetes
+```
+
+#-------------------------------------------------
+# 3. Estimação Hiperparâmetros
+#-------------------------------------------------
+```{r Estimando k}
+#sqrt(nrow(rbind(train_x, valid_x)))
+library(class)
+library(pROC)
+
+k_values <- seq(10, 330, by = 20)
+
+seq(10, 330, by = 20)
+
+aucs <- sapply(k_values, function(k) {
+  pred <- knn(train = train_x,
+              test  = valid_x,
+              cl    = train_y,
+              k     = k,
+              prob  = TRUE)
+  
+  # Extrair a proporção de votos
+  probs <- attr(pred, "prob")
+  
+  # A prob retornada é sempre do vencedor, então precisamos inverter para a classe "Yes"
+  probs_yes <- ifelse(pred == "Yes", probs, 1 - probs)
+  
+  auc_val <- auc(roc(valid_y, probs_yes,
+                     levels = c("No", "Yes"),
+                     direction = "<",
+                     quiet = TRUE))
+  return(as.numeric(auc_val))
+})
+
+# Melhor K
+best_k <- k_values[which.max(aucs)]
+cat("Melhor K:", best_k, "\n")
+cat("AUC na validação:", max(aucs), "\n")
+```
+
+```{r Encontrando limiar}
+library(class)
+library(pROC)
+pred <- knn(train = train_x,
+              test  = valid_x,
+              cl    = train_y,
+              k     = 309,
+              prob  = TRUE)
+
+  # Extrair a proporção de votos
+probs <- attr(pred, "prob")
+  
+  # A prob retornada é sempre do vencedor, então precisamos inverter para a classe "Yes"
+probs_yes <- ifelse(pred == "Yes", probs, 1 - probs)
+
+
+
+roc_val_knn <- roc(valid_y, probs_yes,
+                     levels = c("No", "Yes"),
+                     direction = "<",
+                     quiet = TRUE)
+
+# Busca o valor real mais próximo de 0.9
+resultado <- coords(roc_val_knn, x = "all", ret = c("threshold", "specificity", "sensitivity"))
+melhor_ponto <- resultado[which.min(abs(resultado$sensitivity - 0.9)), ]
+print(melhor_ponto)
+
+threshold <- melhor_ponto$threshold
+```
+
+#-------------------------------------------------
+# 4. Modelo FInal
+#-------------------------------------------------
+```{r MOdelo Final}
+library(dplyr)
+# Juntando traino e validação
+final_x <- bind_rows(train_x, valid_x)
+final_y <- factor(c(as.character(train_y), as.character(valid_y)),
+                  levels = c("No", "Yes"))
+
+pred <- knn(train = final_x,
+              test  = test_x,
+              cl    = final_y,
+              k     = 309,
+              prob  = TRUE)
+  
+  # Extrair a proporção de votos
+probs <- attr(pred, "prob")
+  
+  # A prob retornada é sempre do vencedor, então precisamos inverter para a classe "Yes"
+probs_test_knn_yes <- ifelse(pred == "Yes", probs, 1 - probs)
+
+# Aplicar threshold otimizado
+pred_test_knn <- factor(
+  ifelse(probs_test_knn_yes >= threshold, "Yes", "No"), 
+  levels = c("No", "Yes")  # MESMA ordem da variável original!
+)
+
+# Matriz de confusão
+library(caret)
+confusionMatrix(
+  data = pred_test_knn,
+  reference = test_scaled$diagnosed_diabetes,
+  positive = "Yes"
+)
+```
+
+```{r ROC modelo final}
+roc_test_knn <- roc(test_y, probs_test_knn_yes,
+                     levels = c("No", "Yes"),
+                     direction = "<",
+                     quiet = TRUE)
+
+
+
+# AUC
+auc(roc_test_knn)
+
+# Plot base (opcional, como você fez)
+plot(roc_test_knn)
+
+# ggplot estilo simples
+g <- ggroc(roc_test_knn) +
+  ggtitle("Curva ROC - KNN (Teste)") +
+  annotate(
+    "text",
+    x = 0.12, y = 0.05,
+    label = sprintf("AUC = %.4f", as.numeric(auc(roc_test_knn)))
+  )
+
+print(g)
+# salvar
+ggsave("roc_curve_knn.png", plot = g, width = 4, height = 3)
+```
